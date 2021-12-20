@@ -7,19 +7,17 @@ import net.minestom.server.coordinate.Vec;
 import net.minestom.server.entity.Player;
 import net.minestom.server.entity.pathfinding.PFColumnarSpace;
 import net.minestom.server.instance.block.Block;
-import net.minestom.server.instance.block.BlockGetter;
-import net.minestom.server.instance.block.BlockSetter;
 import net.minestom.server.network.packet.server.play.ChunkDataPacket;
 import net.minestom.server.tag.Tag;
 import net.minestom.server.tag.TagHandler;
 import net.minestom.server.utils.ViewEngine;
 import net.minestom.server.utils.chunk.ChunkSupplier;
+import net.minestom.server.utils.chunk.ChunkUtils;
 import net.minestom.server.world.biomes.Biome;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
-import org.jglrxavpok.hephaistos.nbt.NBTCompound;
+import org.jglrxavpok.hephaistos.nbt.mutable.MutableNBTCompound;
 
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -36,7 +34,7 @@ import java.util.UUID;
  * You generally want to avoid storing references of this object as this could lead to a huge memory leak,
  * you should store the chunk coordinates instead.
  */
-public abstract class Chunk implements BlockGetter, BlockSetter, Viewable, Tickable, TagHandler {
+public abstract class Chunk implements Block.Getter, Block.Setter, Biome.Getter, Biome.Setter, Viewable, Tickable, TagHandler {
     public static final int CHUNK_SIZE_X = 16;
     public static final int CHUNK_SIZE_Z = 16;
     public static final int CHUNK_SECTION_SIZE = 16;
@@ -44,8 +42,6 @@ public abstract class Chunk implements BlockGetter, BlockSetter, Viewable, Ticka
     private final UUID identifier;
 
     protected Instance instance;
-    @NotNull
-    protected final Biome[] biomes;
     protected final int chunkX, chunkZ;
 
     // Options
@@ -59,21 +55,14 @@ public abstract class Chunk implements BlockGetter, BlockSetter, Viewable, Ticka
     protected PFColumnarSpace columnarSpace;
 
     // Data
-    private final NBTCompound nbt = new NBTCompound();
+    private final MutableNBTCompound nbt = new MutableNBTCompound();
 
-    public Chunk(@NotNull Instance instance, @Nullable Biome[] biomes, int chunkX, int chunkZ, boolean shouldGenerate) {
+    public Chunk(@NotNull Instance instance, int chunkX, int chunkZ, boolean shouldGenerate) {
         this.identifier = UUID.randomUUID();
         this.instance = instance;
         this.chunkX = chunkX;
         this.chunkZ = chunkZ;
         this.shouldGenerate = shouldGenerate;
-
-        final int biomeCount = Biome.getBiomeCount(instance.getDimensionType());
-        if (biomes != null && biomes.length == biomeCount) {
-            this.biomes = biomes;
-        } else {
-            this.biomes = new Biome[biomeCount];
-        }
 
         final EntityTracker tracker = instance.getEntityTracker();
         this.viewers.updateTracker(toPosition(), tracker);
@@ -96,9 +85,11 @@ public abstract class Chunk implements BlockGetter, BlockSetter, Viewable, Ticka
     @Override
     public abstract void setBlock(int x, int y, int z, @NotNull Block block);
 
-    public abstract @NotNull Map<Integer, Section> getSections();
-
     public abstract @NotNull Section getSection(int section);
+
+    public @NotNull Section getSectionAt(int blockY) {
+        return getSection(ChunkUtils.getChunkCoordinate(blockY));
+    }
 
     /**
      * Executes a chunk tick.
@@ -167,10 +158,6 @@ public abstract class Chunk implements BlockGetter, BlockSetter, Viewable, Ticka
      */
     public @NotNull Instance getInstance() {
         return instance;
-    }
-
-    public Biome[] getBiomes() {
-        return biomes;
     }
 
     /**

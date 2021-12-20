@@ -46,13 +46,14 @@ import net.minestom.server.inventory.PlayerInventory;
 import net.minestom.server.item.ItemStack;
 import net.minestom.server.item.Material;
 import net.minestom.server.item.metadata.WrittenBookMeta;
+import net.minestom.server.listener.manager.PacketListenerManager;
 import net.minestom.server.message.ChatMessageType;
 import net.minestom.server.message.ChatPosition;
 import net.minestom.server.message.Messenger;
 import net.minestom.server.network.ConnectionManager;
 import net.minestom.server.network.ConnectionState;
 import net.minestom.server.network.PlayerProvider;
-import net.minestom.server.network.packet.client.ClientPlayPacket;
+import net.minestom.server.network.packet.client.ClientPacket;
 import net.minestom.server.network.packet.client.play.ClientChatMessagePacket;
 import net.minestom.server.network.packet.server.SendablePacket;
 import net.minestom.server.network.packet.server.ServerPacket;
@@ -83,6 +84,8 @@ import org.jctools.queues.MpscUnboundedXaddArrayQueue;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import org.jglrxavpok.hephaistos.nbt.NBT;
+import org.jglrxavpok.hephaistos.nbt.NBTCompound;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -101,6 +104,7 @@ import java.util.function.UnaryOperator;
 public class Player extends LivingEntity implements CommandSender, Localizable, HoverEventSource<ShowEntity>, Identified, NamedAndIdentified {
 
     private static final Component REMOVE_MESSAGE = Component.text("You have been removed from the server without reason.", NamedTextColor.RED);
+    private static final PacketListenerManager PACKET_LISTENER_MANAGER = MinecraftServer.getPacketListenerManager();
 
     private long lastKeepAlive;
     private boolean answerKeepAlive;
@@ -137,7 +141,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
     private final AtomicInteger teleportId = new AtomicInteger();
     private int receivedTeleportId;
 
-    private final MessagePassingQueue<ClientPlayPacket> packets = new MpscUnboundedXaddArrayQueue<>(32);
+    private final MessagePassingQueue<ClientPacket> packets = new MpscUnboundedXaddArrayQueue<>(32);
     private final boolean levelFlat;
     private final PlayerSettings settings;
     private float exp;
@@ -234,14 +238,13 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
     public void UNSAFE_init(@NotNull Instance spawnInstance) {
         this.dimensionType = spawnInstance.getDimensionType();
 
-        JoinGamePacket joinGamePacket = new JoinGamePacket();
-        joinGamePacket.entityId = getEntityId();
-        joinGamePacket.gameMode = gameMode;
-        joinGamePacket.dimensionType = dimensionType;
-        joinGamePacket.maxPlayers = 0; // Unused
-        joinGamePacket.viewDistance = MinecraftServer.getChunkViewDistance();
-        joinGamePacket.reducedDebugInfo = false;
-        joinGamePacket.isFlat = levelFlat;
+        NBTCompound nbt = NBT.Compound(Map.of(
+                "minecraft:dimension_type", MinecraftServer.getDimensionTypeManager().toNBT(),
+                "minecraft:worldgen/biome", MinecraftServer.getBiomeManager().toNBT()));
+        final JoinGamePacket joinGamePacket = new JoinGamePacket(getEntityId(), gameMode.isHardcore(), gameMode, null,
+                List.of("minestom:world"), nbt, dimensionType.toNBT(), dimensionType.getName().asString(),
+                0, 0, MinecraftServer.getChunkViewDistance(), MinecraftServer.getChunkViewDistance(),
+                false, true, false, levelFlat);
         playerConnection.sendPacket(joinGamePacket);
 
         // Server brand name
@@ -267,10 +270,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
         // Recipes start
         {
             RecipeManager recipeManager = MinecraftServer.getRecipeManager();
-            DeclareRecipesPacket declareRecipesPacket = recipeManager.getDeclareRecipesPacket();
-            if (declareRecipesPacket.recipes != null) {
-                playerConnection.sendPacket(declareRecipesPacket);
-            }
+            playerConnection.sendPacket(recipeManager.getDeclareRecipesPacket());
 
             List<String> recipesIdentifier = new ArrayList<>();
             for (Recipe recipe : recipeManager.getRecipes()) {
@@ -280,11 +280,12 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
                 recipesIdentifier.add(recipe.getRecipeId());
             }
             if (!recipesIdentifier.isEmpty()) {
-                final String[] identifiers = recipesIdentifier.toArray(new String[0]);
-                UnlockRecipesPacket unlockRecipesPacket = new UnlockRecipesPacket();
-                unlockRecipesPacket.mode = 0;
-                unlockRecipesPacket.recipesId = identifiers;
-                unlockRecipesPacket.initRecipesId = identifiers;
+                UnlockRecipesPacket unlockRecipesPacket = new UnlockRecipesPacket(0,
+                        false, false,
+                        false, false,
+                        false, false,
+                        false, false,
+                        recipesIdentifier, recipesIdentifier);
                 playerConnection.sendPacket(unlockRecipesPacket);
             }
         }
@@ -314,7 +315,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
         this.playerConnection.update();
 
         // Process received packets
-        this.packets.drain(packet -> packet.process(this));
+        this.packets.drain(packet -> PACKET_LISTENER_MANAGER.processClientPacket(packet, this));
 
         super.update(time); // Super update (item pickup/fire management)
 
@@ -325,8 +326,6 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
                     EntityTracker.Target.EXPERIENCE_ORBS, experienceOrb -> {
                         final BoundingBox itemBoundingBox = experienceOrb.getBoundingBox();
                         if (expandedBoundingBox.intersect(itemBoundingBox)) {
-                            if (experienceOrb.shouldRemove() || experienceOrb.isRemoveScheduled())
-                                return;
                             PickupExperienceEvent pickupExperienceEvent = new PickupExperienceEvent(this, experienceOrb);
                             EventDispatcher.callCancellable(pickupExperienceEvent, () -> {
                                 short experienceCount = pickupExperienceEvent.getExperienceCount(); // TODO give to player
@@ -398,7 +397,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
 
             // #buildDeathScreenText can return null, check here
             if (deathText != null) {
-                playerConnection.sendPacket(DeathCombatEventPacket.of(getEntityId(), -1, deathText));
+                playerConnection.sendPacket(new DeathCombatEventPacket(getEntityId(), -1, deathText));
             }
 
             // #buildDeathMessage can return null, check here
@@ -421,10 +420,8 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
         setFireForDuration(0);
         setOnFire(false);
         refreshHealth();
-        RespawnPacket respawnPacket = new RespawnPacket();
-        respawnPacket.dimensionType = getDimensionType();
-        respawnPacket.gameMode = getGameMode();
-        respawnPacket.isFlat = levelFlat;
+        RespawnPacket respawnPacket = new RespawnPacket(getDimensionType(), getDimensionType().getName().asString(),
+                0, gameMode, gameMode, false, levelFlat, true);
         getPlayerConnection().sendPacket(respawnPacket);
         PlayerRespawnEvent respawnEvent = new PlayerRespawnEvent(this);
         EventDispatcher.call(respawnEvent);
@@ -472,9 +469,6 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
         final Pos position = this.position;
         final int chunkX = position.chunkX();
         final int chunkZ = position.chunkZ();
-        // Clear all viewable entities
-        this.instance.getEntityTracker().visibleEntities(chunkX, chunkZ, EntityTracker.Target.ENTITIES,
-                trackingUpdate::remove);
         // Clear all viewable chunks
         ChunkUtils.forChunksInRange(chunkX, chunkZ, MinecraftServer.getChunkViewDistance(), chunkRemover);
         // Remove from the tab-list
@@ -639,9 +633,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
      * @param message the message that the player will send
      */
     public void chat(@NotNull String message) {
-        ClientChatMessagePacket chatMessagePacket = new ClientChatMessagePacket();
-        chatMessagePacket.message = message;
-        addPacketToQueue(chatMessagePacket);
+        addPacketToQueue(new ClientChatMessagePacket(message));
     }
 
     @Override
@@ -657,13 +649,11 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
     @Override
     public void playSound(@NotNull Sound sound, Sound.@NotNull Emitter emitter) {
         final ServerPacket packet;
-
         if (emitter == Sound.Emitter.self()) {
             packet = AdventurePacketConvertor.createSoundPacket(sound, this);
         } else {
             packet = AdventurePacketConvertor.createSoundPacket(sound, emitter);
         }
-
         playerConnection.sendPacket(packet);
     }
 
@@ -683,12 +673,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
      * @param disableRelativeVolume disable volume scaling based on distance
      */
     public void playEffect(@NotNull Effects effect, int x, int y, int z, int data, boolean disableRelativeVolume) {
-        EffectPacket packet = new EffectPacket();
-        packet.effectId = effect.getId();
-        packet.position = new Vec(x, y, z);
-        packet.data = data;
-        packet.disableRelativeVolume = disableRelativeVolume;
-        playerConnection.sendPacket(packet);
+        playerConnection.sendPacket(new EffectPacket(effect.getId(), new Vec(x, y, z), data, disableRelativeVolume));
     }
 
     @Override
@@ -713,7 +698,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
 
     @Override
     public void clearTitle() {
-        playerConnection.sendPacket(new ClearTitlesPacket());
+        playerConnection.sendPacket(new ClearTitlesPacket(false));
     }
 
     @Override
@@ -869,10 +854,8 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
      */
     public void setDisplayName(@Nullable Component displayName) {
         this.displayName = displayName;
-
-        PlayerInfoPacket infoPacket = new PlayerInfoPacket(PlayerInfoPacket.Action.UPDATE_DISPLAY_NAME);
-        infoPacket.playerInfos.add(new PlayerInfoPacket.UpdateDisplayName(getUuid(), displayName));
-        sendPacketToViewersAndSelf(infoPacket);
+        sendPacketToViewersAndSelf(new PlayerInfoPacket(PlayerInfoPacket.Action.UPDATE_DISPLAY_NAME,
+                new PlayerInfoPacket.UpdateDisplayName(getUuid(), displayName)));
     }
 
     /**
@@ -903,10 +886,8 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
         final PlayerInfoPacket removePlayerPacket = getRemovePlayerToList();
         final PlayerInfoPacket addPlayerPacket = getAddPlayerToList();
 
-        RespawnPacket respawnPacket = new RespawnPacket();
-        respawnPacket.dimensionType = getDimensionType();
-        respawnPacket.gameMode = getGameMode();
-        respawnPacket.isFlat = levelFlat;
+        RespawnPacket respawnPacket = new RespawnPacket(getDimensionType(), getDimensionType().getName().asString(),
+                0, gameMode, gameMode, false, levelFlat, true);
 
         playerConnection.sendPacket(removePlayerPacket);
         playerConnection.sendPacket(destroyEntitiesPacket);
@@ -942,7 +923,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
      */
     public void setEnableRespawnScreen(boolean enableRespawnScreen) {
         this.enableRespawnScreen = enableRespawnScreen;
-        sendChangeGameStatePacket(ChangeGameStatePacket.Reason.ENABLE_RESPAWN_SCREEN, enableRespawnScreen ? 0 : 1);
+        sendPacket(new ChangeGameStatePacket(ChangeGameStatePacket.Reason.ENABLE_RESPAWN_SCREEN, enableRespawnScreen ? 0 : 1));
     }
 
     /**
@@ -953,11 +934,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
      */
     @Override
     public @NotNull Component getName() {
-        if (this.displayName != null) {
-            return this.displayName;
-        } else {
-            return this.usernameComponent;
-        }
+        return Objects.requireNonNullElse(displayName, usernameComponent);
     }
 
     /**
@@ -980,13 +957,6 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
         this.usernameComponent = Component.text(username);
     }
 
-    private void sendChangeGameStatePacket(@NotNull ChangeGameStatePacket.Reason reason, float value) {
-        ChangeGameStatePacket changeGameStatePacket = new ChangeGameStatePacket();
-        changeGameStatePacket.reason = reason;
-        changeGameStatePacket.value = value;
-        playerConnection.sendPacket(changeGameStatePacket);
-    }
-
     /**
      * Calls an {@link ItemDropEvent} with a specified item.
      * <p>
@@ -996,10 +966,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
      * @return true if player can drop the item (event not cancelled), false otherwise
      */
     public boolean dropItem(@NotNull ItemStack item) {
-        if (item.isAir()) {
-            return false;
-        }
-
+        if (item.isAir()) return false;
         ItemDropEvent itemDropEvent = new ItemDropEvent(this, item);
         EventDispatcher.call(itemDropEvent);
         return !itemDropEvent.isCancelled();
@@ -1037,18 +1004,13 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
 
     private void facePosition(@NotNull FacePoint facePoint, @NotNull Point targetPosition,
                               @Nullable Entity entity, @Nullable FacePoint targetPoint) {
-        FacePlayerPacket facePlayerPacket = new FacePlayerPacket();
-        facePlayerPacket.entityFacePosition = facePoint == FacePoint.EYE ?
-                FacePlayerPacket.FacePosition.EYES : FacePlayerPacket.FacePosition.FEET;
-        facePlayerPacket.targetX = targetPosition.x();
-        facePlayerPacket.targetY = targetPosition.y();
-        facePlayerPacket.targetZ = targetPosition.z();
-        if (entity != null) {
-            facePlayerPacket.entityId = entity.getEntityId();
-            facePlayerPacket.entityFacePosition = targetPoint == FacePoint.EYE ?
-                    FacePlayerPacket.FacePosition.EYES : FacePlayerPacket.FacePosition.FEET;
-        }
-        playerConnection.sendPacket(facePlayerPacket);
+        final int entityId = entity != null ? entity.getEntityId() : 0;
+        playerConnection.sendPacket(new FacePlayerPacket(
+                facePoint == FacePoint.EYE ?
+                        FacePlayerPacket.FacePosition.EYES : FacePlayerPacket.FacePosition.FEET, targetPosition,
+                entityId,
+                targetPoint == FacePoint.EYE ?
+                        FacePlayerPacket.FacePosition.EYES : FacePlayerPacket.FacePosition.FEET));
     }
 
     /**
@@ -1245,11 +1207,9 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
         this.gameMode = gameMode;
         // Condition to prevent sending the packets before spawning the player
         if (isActive()) {
-            sendChangeGameStatePacket(ChangeGameStatePacket.Reason.CHANGE_GAMEMODE, gameMode.getId());
-
-            PlayerInfoPacket infoPacket = new PlayerInfoPacket(PlayerInfoPacket.Action.UPDATE_GAMEMODE);
-            infoPacket.playerInfos.add(new PlayerInfoPacket.UpdateGamemode(getUuid(), gameMode));
-            sendPacketToViewersAndSelf(infoPacket);
+            sendPacket(new ChangeGameStatePacket(ChangeGameStatePacket.Reason.CHANGE_GAMEMODE, gameMode.getId()));
+            sendPacketToViewersAndSelf(new PlayerInfoPacket(PlayerInfoPacket.Action.UPDATE_GAMEMODE,
+                    new PlayerInfoPacket.UpdateGameMode(getUuid(), gameMode)));
         }
     }
 
@@ -1272,11 +1232,8 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
         Check.argCondition(dimensionType.equals(getDimensionType()),
                 "The dimension needs to be different than the current one!");
         this.dimensionType = dimensionType;
-        RespawnPacket respawnPacket = new RespawnPacket();
-        respawnPacket.dimensionType = dimensionType;
-        respawnPacket.gameMode = gameMode;
-        respawnPacket.isFlat = levelFlat;
-        playerConnection.sendPacket(respawnPacket);
+        sendPacket(new RespawnPacket(dimensionType, dimensionType.getName().asString(),
+                0, gameMode, gameMode, false, levelFlat, true));
     }
 
     /**
@@ -1385,10 +1342,8 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
                 return;
             }
 
-            OpenWindowPacket openWindowPacket = new OpenWindowPacket(newInventory.getTitle());
-            openWindowPacket.windowId = newInventory.getWindowId();
-            openWindowPacket.windowType = newInventory.getInventoryType().getWindowType();
-            playerConnection.sendPacket(openWindowPacket);
+            playerConnection.sendPacket(new OpenWindowPacket(newInventory.getWindowId(),
+                    newInventory.getInventoryType().getWindowType(), newInventory.getTitle()));
             newInventory.addViewer(this);
             this.openInventory = newInventory;
         });
@@ -1418,11 +1373,11 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
             }
         }
 
-        CloseWindowPacket closeWindowPacket = new CloseWindowPacket();
+        CloseWindowPacket closeWindowPacket;
         if (openInventory == null) {
-            closeWindowPacket.windowId = 0;
+            closeWindowPacket = new CloseWindowPacket((byte) 0);
         } else {
-            closeWindowPacket.windowId = openInventory.getWindowId();
+            closeWindowPacket = new CloseWindowPacket(openInventory.getWindowId());
             openInventory.removeViewer(this); // Clear cache
             this.openInventory = null;
         }
@@ -1706,7 +1661,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
      *
      * @param packet the packet to add in the queue
      */
-    public void addPacketToQueue(@NotNull ClientPlayPacket packet) {
+    public void addPacketToQueue(@NotNull ClientPacket packet) {
         this.packets.offer(packet);
     }
 
@@ -1717,9 +1672,8 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
      */
     public void refreshLatency(int latency) {
         this.latency = latency;
-        PlayerInfoPacket playerInfoPacket = new PlayerInfoPacket(PlayerInfoPacket.Action.UPDATE_LATENCY);
-        playerInfoPacket.playerInfos.add(new PlayerInfoPacket.UpdateLatency(getUuid(), latency));
-        sendPacketToViewersAndSelf(playerInfoPacket);
+        sendPacketToViewersAndSelf(new PlayerInfoPacket(PlayerInfoPacket.Action.UPDATE_LATENCY,
+                new PlayerInfoPacket.UpdateLatency(getUuid(), latency)));
     }
 
     public void refreshOnGround(boolean onGround) {
@@ -1840,21 +1794,12 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
      * @return a {@link PlayerInfoPacket} to add the player
      */
     protected @NotNull PlayerInfoPacket getAddPlayerToList() {
-        PlayerInfoPacket playerInfoPacket = new PlayerInfoPacket(PlayerInfoPacket.Action.ADD_PLAYER);
-
-        PlayerInfoPacket.AddPlayer addPlayer =
-                new PlayerInfoPacket.AddPlayer(getUuid(), getUsername(), getGameMode(), getLatency());
-        addPlayer.displayName = displayName;
-
-        // Skin support
-        if (skin != null) {
-            PlayerInfoPacket.AddPlayer.Property prop =
-                    new PlayerInfoPacket.AddPlayer.Property("textures", skin.textures(), skin.signature());
-            addPlayer.properties.add(prop);
-        }
-
-        playerInfoPacket.playerInfos.add(addPlayer);
-        return playerInfoPacket;
+        final PlayerSkin skin = this.skin;
+        List<PlayerInfoPacket.AddPlayer.Property> prop = skin != null ?
+                List.of(new PlayerInfoPacket.AddPlayer.Property("textures", skin.textures(), skin.signature())) :
+                Collections.emptyList();
+        return new PlayerInfoPacket(PlayerInfoPacket.Action.ADD_PLAYER,
+                new PlayerInfoPacket.AddPlayer(getUuid(), getUsername(), prop, getGameMode(), getLatency(), displayName));
     }
 
     /**
@@ -1863,9 +1808,7 @@ public class Player extends LivingEntity implements CommandSender, Localizable, 
      * @return a {@link PlayerInfoPacket} to remove the player
      */
     protected @NotNull PlayerInfoPacket getRemovePlayerToList() {
-        PlayerInfoPacket playerInfoPacket = new PlayerInfoPacket(PlayerInfoPacket.Action.REMOVE_PLAYER);
-        playerInfoPacket.playerInfos.add(new PlayerInfoPacket.RemovePlayer(getUuid()));
-        return playerInfoPacket;
+        return new PlayerInfoPacket(PlayerInfoPacket.Action.REMOVE_PLAYER, new PlayerInfoPacket.RemovePlayer(getUuid()));
     }
 
     /**

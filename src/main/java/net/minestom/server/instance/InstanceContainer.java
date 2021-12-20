@@ -2,7 +2,6 @@ package net.minestom.server.instance;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
-import net.minestom.server.MinecraftServer;
 import net.minestom.server.coordinate.Point;
 import net.minestom.server.coordinate.Vec;
 import net.minestom.server.entity.Entity;
@@ -26,10 +25,10 @@ import net.minestom.server.utils.chunk.ChunkSupplier;
 import net.minestom.server.utils.chunk.ChunkUtils;
 import net.minestom.server.utils.validate.Check;
 import net.minestom.server.world.DimensionType;
-import net.minestom.server.world.biomes.Biome;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
+import space.vectrix.flare.fastutil.Long2ObjectSyncMap;
 
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -50,7 +49,7 @@ public class InstanceContainer extends Instance {
     private ChunkGenerator chunkGenerator;
     // (chunk index -> chunk) map, contains all the chunks in the instance
     // used as a monitor when access is required
-    private final Long2ObjectMap<Chunk> chunks = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectSyncMap<Chunk> chunks = Long2ObjectSyncMap.hashmap();
     private final Long2ObjectMap<CompletableFuture<Chunk>> loadingChunks = new Long2ObjectOpenHashMap<>();
 
     private final Lock changingBlockLock = new ReentrantLock();
@@ -222,9 +221,7 @@ public class InstanceContainer extends Instance {
         // Remove all entities in chunk
         getEntityTracker().chunkEntities(chunkX, chunkZ, EntityTracker.Target.ENTITIES, Entity::remove);
         // Clear cache
-        synchronized (chunks) {
-            this.chunks.remove(index);
-        }
+        this.chunks.remove(index);
         chunk.unload();
         UPDATE_MANAGER.signalChunkUnload(chunk);
     }
@@ -232,9 +229,7 @@ public class InstanceContainer extends Instance {
     @Override
     public Chunk getChunk(int chunkX, int chunkZ) {
         final long index = ChunkUtils.getChunkIndex(chunkX, chunkZ);
-        synchronized (chunks) {
-            return chunks.get(index);
-        }
+        return chunks.get(index);
     }
 
     @Override
@@ -284,13 +279,7 @@ public class InstanceContainer extends Instance {
 
     protected @NotNull CompletableFuture<@NotNull Chunk> createChunk(int chunkX, int chunkZ) {
         final ChunkGenerator generator = this.chunkGenerator;
-        Biome[] biomes = new Biome[Biome.getBiomeCount(getDimensionType())];
-        if (generator == null) {
-            Arrays.fill(biomes, MinecraftServer.getBiomeManager().getById(0));
-        } else {
-            generator.fillBiomes(biomes, chunkX, chunkZ);
-        }
-        final Chunk chunk = chunkSupplier.createChunk(this, biomes, chunkX, chunkZ);
+        final Chunk chunk = chunkSupplier.createChunk(this, chunkX, chunkZ);
         Check.notNull(chunk, "Chunks supplied by a ChunkSupplier cannot be null.");
         if (generator != null && chunk.shouldGenerate()) {
             // Execute the chunk generator to populate the chunk
@@ -387,13 +376,11 @@ public class InstanceContainer extends Instance {
         InstanceContainer copiedInstance = new InstanceContainer(UUID.randomUUID(), getDimensionType());
         copiedInstance.srcInstance = this;
         copiedInstance.lastBlockChangeTime = lastBlockChangeTime;
-        synchronized (chunks) {
-            for (Chunk chunk : chunks.values()) {
-                final int chunkX = chunk.getChunkX();
-                final int chunkZ = chunk.getChunkZ();
-                final Chunk copiedChunk = chunk.copy(copiedInstance, chunkX, chunkZ);
-                copiedInstance.cacheChunk(copiedChunk);
-            }
+        for (Chunk chunk : chunks.values()) {
+            final int chunkX = chunk.getChunkX();
+            final int chunkZ = chunk.getChunkZ();
+            final Chunk copiedChunk = chunk.copy(copiedInstance, chunkX, chunkZ);
+            copiedInstance.cacheChunk(copiedChunk);
         }
         return copiedInstance;
     }
@@ -445,9 +432,7 @@ public class InstanceContainer extends Instance {
      */
     @Override
     public @NotNull Collection<@NotNull Chunk> getChunks() {
-        synchronized (chunks) {
-            return List.copyOf(chunks.values());
-        }
+        return chunks.values();
     }
 
     /**
@@ -537,9 +522,7 @@ public class InstanceContainer extends Instance {
 
     private void cacheChunk(@NotNull Chunk chunk) {
         final long index = ChunkUtils.getChunkIndex(chunk);
-        synchronized (chunks) {
-            this.chunks.put(index, chunk);
-        }
+        this.chunks.put(index, chunk);
         UPDATE_MANAGER.signalChunkLoad(chunk);
     }
 }

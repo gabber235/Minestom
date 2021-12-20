@@ -2,7 +2,10 @@ package net.minestom.server.item;
 
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.gson.GsonComponentSerializer;
+import net.minestom.server.attribute.Attribute;
+import net.minestom.server.attribute.AttributeOperation;
 import net.minestom.server.instance.block.Block;
+import net.minestom.server.item.attribute.AttributeSlot;
 import net.minestom.server.item.attribute.ItemAttribute;
 import net.minestom.server.tag.Tag;
 import net.minestom.server.tag.TagWritable;
@@ -12,19 +15,14 @@ import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.jglrxavpok.hephaistos.nbt.*;
+import org.jglrxavpok.hephaistos.nbt.mutable.MutableNBTCompound;
 
 import java.util.*;
-import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 public abstract class ItemMetaBuilder implements TagWritable {
-
-    private static final AtomicReferenceFieldUpdater<ItemMetaBuilder, NBTCompound> NBT_UPDATER =
-            AtomicReferenceFieldUpdater.newUpdater(ItemMetaBuilder.class, NBTCompound.class, "nbt");
-
-    protected volatile boolean built = false;
-    private volatile NBTCompound nbt = new NBTCompound();
+    MutableNBTCompound nbt = new MutableNBTCompound();
 
     protected int damage;
     protected boolean unbreakable;
@@ -47,7 +45,7 @@ public abstract class ItemMetaBuilder implements TagWritable {
     @Contract("_ -> this")
     public @NotNull ItemMetaBuilder unbreakable(boolean unbreakable) {
         this.unbreakable = unbreakable;
-        mutateNbt(compound -> compound.setByte("Unbreakable", (byte) (unbreakable ? 1 : 0)));
+        mutateNbt(compound -> compound.set("Unbreakable", NBT.Boolean(unbreakable)));
         return this;
     }
 
@@ -75,7 +73,7 @@ public abstract class ItemMetaBuilder implements TagWritable {
                 final String name = GsonComponentSerializer.gson().serialize(displayName);
                 nbtCompound.setString("Name", name);
             } else {
-                nbtCompound.removeTag("Name");
+                nbtCompound.remove("Name");
             }
         });
         return this;
@@ -85,10 +83,11 @@ public abstract class ItemMetaBuilder implements TagWritable {
     public @NotNull ItemMetaBuilder lore(@NotNull List<@NotNull Component> lore) {
         this.lore = new ArrayList<>(lore);
         handleCompound("display", nbtCompound -> {
-            final NBTList<NBTString> loreNBT = new NBTList<>(NBTTypes.TAG_String);
-            for (Component line : lore) {
-                loreNBT.add(new NBTString(GsonComponentSerializer.gson().serialize(line)));
-            }
+            final NBTList<NBTString> loreNBT = NBT.List(NBTType.TAG_String,
+                    lore.stream()
+                            .map(line -> new NBTString(GsonComponentSerializer.gson().serialize(line)))
+                            .toList()
+            );
             nbtCompound.set("Lore", loreNBT);
         });
         return this;
@@ -103,10 +102,8 @@ public abstract class ItemMetaBuilder implements TagWritable {
     @Contract("_ -> this")
     public @NotNull ItemMetaBuilder enchantments(@NotNull Map<Enchantment, Short> enchantments) {
         this.enchantmentMap = new HashMap<>(enchantments);
-        handleMap(enchantmentMap, "Enchantments", () -> {
-            NBTUtils.writeEnchant(nbt, "Enchantments", enchantmentMap);
-            return nbt.get("Enchantments");
-        });
+        handleMap(enchantmentMap, "Enchantments",
+                (nbt) -> NBTUtils.writeEnchant(nbt, "Enchantments", enchantmentMap));
         return this;
     }
 
@@ -127,22 +124,19 @@ public abstract class ItemMetaBuilder implements TagWritable {
     @Contract("_ -> this")
     public @NotNull ItemMetaBuilder attributes(@NotNull List<@NotNull ItemAttribute> attributes) {
         this.attributes = new ArrayList<>(attributes);
-        handleCollection(attributes, "AttributeModifiers", () -> {
-            NBTList<NBTCompound> attributesNBT = new NBTList<>(NBTTypes.TAG_Compound);
-            for (ItemAttribute itemAttribute : attributes) {
-                final UUID uuid = itemAttribute.getUuid();
-                attributesNBT.add(
-                        new NBTCompound()
-                                .setIntArray("UUID", Utils.uuidToIntArray(uuid))
-                                .setDouble("Amount", itemAttribute.getValue())
-                                .setString("Slot", itemAttribute.getSlot().name().toLowerCase())
-                                .setString("AttributeName", itemAttribute.getAttribute().getKey())
-                                .setInt("Operation", itemAttribute.getOperation().getId())
-                                .setString("Name", itemAttribute.getInternalName())
-                );
-            }
-            return attributesNBT;
-        });
+
+        handleCollection(attributes, "AttributeModifiers", () -> NBT.List(
+                NBTType.TAG_Compound,
+                attributes.stream()
+                        .map(itemAttribute -> NBT.Compound(Map.of(
+                                "UUID", NBT.IntArray(Utils.uuidToIntArray(itemAttribute.getUuid())),
+                                "Amount", NBT.Double(itemAttribute.getValue()),
+                                "Slot", NBT.String(itemAttribute.getSlot().name().toLowerCase()),
+                                "AttributeName", NBT.String(itemAttribute.getAttribute().getKey()),
+                                "Operation", NBT.Int(itemAttribute.getOperation().getId()),
+                                "Name", NBT.String(itemAttribute.getInternalName()))))
+                        .toList()
+        ));
 
         return this;
     }
@@ -157,11 +151,12 @@ public abstract class ItemMetaBuilder implements TagWritable {
     @Contract("_ -> this")
     public @NotNull ItemMetaBuilder canPlaceOn(@NotNull Set<@NotNull Block> blocks) {
         this.canPlaceOn = new HashSet<>(blocks);
-        handleCollection(canPlaceOn, "CanPlaceOn", () -> {
-            NBTList<NBTString> list = new NBTList<>(NBTTypes.TAG_String);
-            canPlaceOn.forEach(block -> list.add(new NBTString(block.name())));
-            return list;
-        });
+        handleCollection(canPlaceOn, "CanPlaceOn", () -> NBT.List(
+                NBTType.TAG_String,
+                canPlaceOn.stream()
+                        .map(block -> new NBTString(block.name()))
+                        .toList()
+        ));
         return this;
     }
 
@@ -173,11 +168,12 @@ public abstract class ItemMetaBuilder implements TagWritable {
     @Contract("_ -> this")
     public @NotNull ItemMetaBuilder canDestroy(@NotNull Set<@NotNull Block> blocks) {
         this.canDestroy = new HashSet<>(blocks);
-        handleCollection(canDestroy, "CanDestroy", () -> {
-            NBTList<NBTString> list = new NBTList<>(NBTTypes.TAG_String);
-            canDestroy.forEach(block -> list.add(new NBTString(block.name())));
-            return list;
-        });
+        handleCollection(canDestroy, "CanDestroy", () -> NBT.List(
+                NBTType.TAG_String,
+                canDestroy.stream()
+                        .map(block -> new NBTString(block.name()))
+                        .toList()
+        ));
         return this;
     }
 
@@ -203,47 +199,25 @@ public abstract class ItemMetaBuilder implements TagWritable {
 
     protected abstract @NotNull Supplier<@NotNull ItemMetaBuilder> getSupplier();
 
-    protected synchronized void mutateNbt(Consumer<NBTCompound> consumer) {
-        if (built) {
-            built = false;
-            final var currentNbt = nbt;
-            NBT_UPDATER.compareAndSet(this, currentNbt, currentNbt.deepClone());
-        }
+    protected void mutateNbt(Consumer<MutableNBTCompound> consumer) {
         consumer.accept(nbt);
     }
 
-    protected synchronized NBTCompound nbt() {
-        return nbt;
-    }
-
     protected @NotNull ItemMeta generate() {
-        this.built = true;
         return build();
     }
 
     protected void handleCompound(@NotNull String key,
-                                  @NotNull Consumer<@NotNull NBTCompound> consumer) {
+                                  @NotNull Consumer<@NotNull MutableNBTCompound> consumer) {
         mutateNbt(nbt -> {
-            NBTCompound compound = null;
-            boolean newNbt = false;
-            if (nbt.containsKey(key)) {
-                NBT dNbt = nbt.get(key);
-                if (dNbt instanceof NBTCompound) {
-                    compound = (NBTCompound) dNbt;
-                }
+            MutableNBTCompound compoundToModify = nbt.get(key) instanceof NBTCompound compound ?
+                    compound.toMutableCompound() : new MutableNBTCompound();
+
+            consumer.accept(compoundToModify);
+            if (compoundToModify.isEmpty()) {
+                nbt.remove(key);
             } else {
-                compound = new NBTCompound();
-                newNbt = true;
-            }
-
-            if (compound != null) {
-                consumer.accept(compound);
-
-                if (newNbt && compound.getSize() > 0) {
-                    this.nbt.set(key, compound);
-                } else if (!newNbt && compound.getSize() == 0) {
-                    this.nbt.removeTag(key);
-                }
+                nbt.set(key, compoundToModify.toCompound());
             }
         });
     }
@@ -255,7 +229,7 @@ public abstract class ItemMetaBuilder implements TagWritable {
             if (value != null) {
                 compound.set(key, supplier.get());
             } else {
-                compound.removeTag(key);
+                compound.remove(key);
             }
         });
     }
@@ -267,19 +241,19 @@ public abstract class ItemMetaBuilder implements TagWritable {
             if (!objects.isEmpty()) {
                 compound.set(key, supplier.get());
             } else {
-                compound.removeTag(key);
+                compound.remove(key);
             }
         });
     }
 
     protected void handleMap(@NotNull Map<?, ?> objects,
                              @NotNull String key,
-                             @NotNull Supplier<@NotNull NBT> supplier) {
+                             @NotNull Consumer<MutableNBTCompound> consumer) {
         mutateNbt(compound -> {
             if (!objects.isEmpty()) {
-                compound.set(key, supplier.get());
+                consumer.accept(compound);
             } else {
-                compound.removeTag(key);
+                compound.remove(key);
             }
         });
     }
@@ -287,9 +261,95 @@ public abstract class ItemMetaBuilder implements TagWritable {
     @Contract(value = "_, _ -> new", pure = true)
     public static @NotNull ItemMetaBuilder fromNBT(@NotNull ItemMetaBuilder src, @NotNull NBTCompound nbtCompound) {
         ItemMetaBuilder dest = src.getSupplier().get();
-        dest.nbt = nbtCompound.deepClone();
-        NBTUtils.loadDataIntoMeta(dest, dest.nbt);
+        dest.nbt = nbtCompound.toMutableCompound();
+        appendDefaultMeta(dest, nbtCompound);
         return dest;
+    }
+
+    private static void appendDefaultMeta(@NotNull ItemMetaBuilder metaBuilder,
+                                          @NotNull NBTCompound nbt) {
+        if (nbt.get("Damage") instanceof NBTInt damage) metaBuilder.damage = damage.getValue();
+        if (nbt.get("Unbreakable") instanceof NBTByte unbreakable) metaBuilder.unbreakable = unbreakable.asBoolean();
+        if (nbt.get("HideFlags") instanceof NBTInt hideFlags) metaBuilder.hideFlag = hideFlags.getValue();
+        if (nbt.get("display") instanceof NBTCompound display) {
+            if (display.get("Name") instanceof NBTString rawName) {
+                metaBuilder.displayName = GsonComponentSerializer.gson().deserialize(rawName.getValue());
+            }
+            if (display.get("Lore") instanceof NBTList<?> loreList &&
+                    loreList.getSubtagType() == NBTType.TAG_String) {
+                for (NBTString rawLore : loreList.<NBTString>asListOf()) {
+                    metaBuilder.lore.add(GsonComponentSerializer.gson().deserialize(rawLore.getValue()));
+                }
+            }
+        }
+        // Enchantments
+        if (nbt.get("Enchantments") instanceof NBTList<?> nbtEnchants &&
+                nbtEnchants.getSubtagType() == NBTType.TAG_Compound) {
+            NBTUtils.loadEnchantments(nbtEnchants.asListOf(),
+                    (enchantment, level) -> metaBuilder.enchantmentMap.put(enchantment, level));
+        }
+        // Attributes
+        if (nbt.get("AttributeModifiers") instanceof NBTList<?> nbtAttributes &&
+                nbtAttributes.getSubtagType() == NBTType.TAG_Compound) {
+            for (NBTCompound attributeNBT : nbtAttributes.<NBTCompound>asListOf()) {
+                final UUID uuid;
+                {
+                    final int[] uuidArray = attributeNBT.getIntArray("UUID").copyArray();
+                    uuid = Utils.intArrayToUuid(uuidArray);
+                }
+
+                final double value = attributeNBT.getAsDouble("Amount");
+                final String slot = attributeNBT.containsKey("Slot") ? attributeNBT.getString("Slot") : "MAINHAND";
+                final String attributeName = attributeNBT.getString("AttributeName");
+                final int operation = attributeNBT.getAsInt("Operation");
+                final String name = attributeNBT.getString("Name");
+
+                final Attribute attribute = Attribute.fromKey(attributeName);
+                // Wrong attribute name, stop here
+                if (attribute == null)
+                    break;
+                final AttributeOperation attributeOperation = AttributeOperation.fromId(operation);
+                // Wrong attribute operation, stop here
+                if (attributeOperation == null) {
+                    break;
+                }
+
+                // Find slot, default to the main hand if the nbt tag is invalid
+                AttributeSlot attributeSlot;
+                try {
+                    attributeSlot = AttributeSlot.valueOf(slot.toUpperCase());
+                } catch (IllegalArgumentException e) {
+                    attributeSlot = AttributeSlot.MAINHAND;
+                }
+
+                // Add attribute
+                final ItemAttribute itemAttribute =
+                        new ItemAttribute(uuid, name, attribute, attributeOperation, value, attributeSlot);
+                metaBuilder.attributes.add(itemAttribute);
+            }
+        }
+        // Custom model data
+        if (nbt.get("CustomModelData") instanceof NBTInt customModelData) {
+            metaBuilder.customModelData = customModelData.getValue();
+        }
+        // Meta specific fields
+        metaBuilder.read(nbt);
+        // CanPlaceOn
+        if (nbt.get("CanPlaceOn") instanceof NBTList<?> canPlaceOn &&
+                canPlaceOn.getSubtagType() == NBTType.TAG_String) {
+            for (NBTString blockNamespace : canPlaceOn.<NBTString>asListOf()) {
+                Block block = Block.fromNamespaceId(blockNamespace.getValue());
+                metaBuilder.canPlaceOn.add(block);
+            }
+        }
+        // CanDestroy
+        if (nbt.get("CanDestroy") instanceof NBTList<?> canDestroy &&
+                canDestroy.getSubtagType() == NBTType.TAG_String) {
+            for (NBTString blockNamespace : canDestroy.<NBTString>asListOf()) {
+                Block block = Block.fromNamespaceId(blockNamespace.getValue());
+                metaBuilder.canDestroy.add(block);
+            }
+        }
     }
 
     public interface Provider<T extends ItemMetaBuilder> {

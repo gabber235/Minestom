@@ -2,8 +2,6 @@ package net.minestom.server.registry;
 
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.stream.JsonReader;
-import it.unimi.dsi.fastutil.objects.Object2ObjectArrayMap;
-import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import net.minestom.server.MinecraftServer;
 import net.minestom.server.entity.EntitySpawnType;
 import net.minestom.server.entity.EquipmentSlot;
@@ -157,6 +155,7 @@ public final class Registry {
         private final boolean solid;
         private final boolean liquid;
         private final String blockEntity;
+        private final int blockEntityId;
         private final Supplier<Material> materialSupplier;
 
         private BlockEntry(String namespace, Map<String, Object> main, Map<String, Object> override) {
@@ -173,13 +172,14 @@ public final class Registry {
             this.air = getBoolean("air", false);
             this.solid = getBoolean("solid");
             this.liquid = getBoolean("liquid", false);
-
             {
                 Map<String, Object> blockEntity = element("blockEntity");
                 if (blockEntity != null) {
                     this.blockEntity = (String) blockEntity.get("namespace");
+                    this.blockEntityId = ((Number) blockEntity.get("id")).intValue();
                 } else {
                     this.blockEntity = null;
+                    this.blockEntityId = 0;
                 }
             }
             {
@@ -242,6 +242,10 @@ public final class Registry {
 
         public @Nullable String blockEntity() {
             return blockEntity;
+        }
+
+        public int blockEntityId() {
+            return blockEntityId;
         }
 
         public @Nullable Material material() {
@@ -529,18 +533,18 @@ public final class Registry {
     private static Object readObject(JsonReader reader) throws IOException {
         return switch (reader.peek()) {
             case BEGIN_ARRAY -> {
-                ObjectArrayList<Object> list = new ObjectArrayList<>();
+                List<Object> list = new ArrayList<>();
                 reader.beginArray();
                 while (reader.hasNext()) list.add(readObject(reader));
                 reader.endArray();
-                yield new ObjectArrayList<>(list);
+                yield List.copyOf(list);
             }
             case BEGIN_OBJECT -> {
-                Object2ObjectArrayMap<String, Object> map = new Object2ObjectArrayMap<>();
+                Map<String, Object> map = new HashMap<>();
                 reader.beginObject();
                 while (reader.hasNext()) map.put(reader.nextName().intern(), readObject(reader));
                 reader.endObject();
-                yield new Object2ObjectArrayMap<>(map);
+                yield Map.copyOf(map);
             }
             case STRING -> reader.nextString().intern();
             case NUMBER -> ToNumberPolicy.LONG_OR_DOUBLE.readNumber(reader);

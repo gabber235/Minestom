@@ -54,8 +54,8 @@ public final class MinecraftServer {
 
     public final static Logger LOGGER = LoggerFactory.getLogger(MinecraftServer.class);
 
-    public static final String VERSION_NAME = "1.17.1";
-    public static final int PROTOCOL_VERSION = 756;
+    public static final String VERSION_NAME = "1.18.1";
+    public static final int PROTOCOL_VERSION = 757;
 
     // Threads
     public static final String THREAD_NAME_BENCHMARK = "Ms-Benchmark";
@@ -66,13 +66,6 @@ public final class MinecraftServer {
     public static final String THREAD_NAME_BLOCK_BATCH = "Ms-BlockBatchPool";
     public static final int THREAD_COUNT_BLOCK_BATCH = getThreadCount("minestom.block-thread-count",
             Runtime.getRuntime().availableProcessors() / 2);
-
-    public static final String THREAD_NAME_SCHEDULER = "Ms-SchedulerPool";
-    public static final int THREAD_COUNT_SCHEDULER = getThreadCount("minestom.scheduler-thread-count",
-            Runtime.getRuntime().availableProcessors() / 2);
-
-    public static final String THREAD_NAME_PARALLEL_CHUNK_SAVING = "Ms-ParallelChunkSaving";
-    public static final int THREAD_COUNT_PARALLEL_CHUNK_SAVING = getThreadCount("minestom.save-thread-count", 2);
 
     // Config
     // Can be modified at performance cost when increased
@@ -323,6 +316,7 @@ public final class MinecraftServer {
      *
      * @return the storage manager
      */
+    @Deprecated
     public static StorageManager getStorageManager() {
         checkInitStatus(storageManager);
         return storageManager;

@@ -53,7 +53,7 @@ public class ItemMeta implements TagReadable, Writeable {
         this.canPlaceOn = Set.copyOf(metaBuilder.canPlaceOn);
 
         this.metaBuilder = metaBuilder;
-        this.nbt = metaBuilder.nbt();
+        this.nbt = metaBuilder.nbt.toCompound();
     }
 
     @Contract(value = "_, -> new", pure = true)
@@ -119,7 +119,7 @@ public class ItemMeta implements TagReadable, Writeable {
     }
 
     public @NotNull NBTCompound toNBT() {
-        return nbt.deepClone();
+        return nbt;
     }
 
     public @NotNull String toSNBT() {
@@ -162,6 +162,6 @@ public class ItemMeta implements TagReadable, Writeable {
             w.writeNBT("", nbt);
             this.cachedBuffer = w.getBuffer();
         }
-        writer.write(cachedBuffer);
+        writer.write(cachedBuffer.flip());
     }
 }
